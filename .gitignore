@@ -39,3 +39,8 @@ next-env.d.ts
 
 # wardrobe uploads (personal photos — don't commit)
 /public/wardrobe/
+
+# SQLite database (local data)
+/prisma/*.db
+/prisma/*.db-shm
+/prisma/*.db-wal
