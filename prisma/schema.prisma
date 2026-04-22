@@ -1,0 +1,59 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model ClothingItem {
+  id              String   @id @default(cuid())
+  createdAt       DateTime @default(now())
+  imagePath       String
+  name            String?
+  category        String
+  subcategory     String?
+  primaryColor    String
+  primaryColorHex String
+  secondaryColor  String?
+  pattern         String?
+  fabric          String?
+  fit             String?
+  formality       Int
+  seasons         String
+  styleTags       String
+  notes           String?
+  active          Boolean  @default(true)
+}
+
+model Outfit {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  name        String
+  theme       String
+  itemIds     String
+  description String?
+  saved       Boolean  @default(false)
+}
+
+model StyleProfile {
+  id             String   @id @default(cuid())
+  updatedAt      DateTime @updatedAt
+  aesthetics     String
+  likedLooks     String
+  colorPalette   String
+  avoidColors    String
+  formalityRange String
+  notes          String?
+}
+
+model WardrobeGap {
+  id              String   @id @default(cuid())
+  createdAt       DateTime @default(now())
+  itemDescription String
+  category        String
+  reason          String
+  outfitsUnlocked Int
+  dismissed       Boolean  @default(false)
+}

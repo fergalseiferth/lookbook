@@ -1,0 +1,121 @@
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+export async function tagClothingItem(base64Image: string, mediaType: string) {
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mediaType as
+                | "image/jpeg"
+                | "image/png"
+                | "image/gif"
+                | "image/webp",
+              data: base64Image,
+            },
+          },
+          {
+            type: "text",
+            text: `Analyze this clothing item and return ONLY a JSON object with no preamble or markdown. Be precise and literal — do not guess or over-infer.
+
+{
+  "name": "short descriptive name e.g. 'White oxford shirt'",
+  "category": "one of: tops | bottoms | outerwear | shoes | accessories",
+  "subcategory": "specific type e.g. 'oxford shirt' | 'chino trouser' | 'chelsea boot' | 'crewneck sweatshirt'",
+  "primaryColor": "most dominant color as a simple label e.g. 'navy' | 'off-white' | 'camel' | 'olive'",
+  "primaryColorHex": "best estimate hex code for the dominant color e.g. '#1a2a4a'",
+  "secondaryColor": "second color if clearly present, else null",
+  "pattern": "one of: solid | stripe | check | plaid | floral | graphic | textured | other",
+  "fabric": "best estimate: cotton | linen | wool | denim | leather | suede | cashmere | synthetic | knit | other",
+  "fit": "one of: slim | regular | relaxed | oversized — assess from the garment shape",
+  "formality": "integer 1-5 where 1=very casual (gym clothes), 3=smart casual (dinner with friends), 5=formal (suit jacket)",
+  "seasons": ["array of applicable seasons: spring | summer | fall | winter"],
+  "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
+}`,
+          },
+        ],
+      },
+    ],
+  });
+
+  const text =
+    response.content.find((b) => b.type === "text")?.text ?? "";
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(cleaned);
+}
+
+export async function nameOutfit(
+  items: Array<{
+    name: string | null;
+    primaryColor: string;
+    styleTags: string;
+    subcategory: string | null;
+  }>,
+  theme: string
+): Promise<{ name: string; description: string; occasion: string }> {
+  const itemSummary = items
+    .map(
+      (i) =>
+        `${i.name ?? i.subcategory} (${i.primaryColor}, tags: ${i.styleTags})`
+    )
+    .join(", ");
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 256,
+    messages: [
+      {
+        role: "user",
+        content: `These clothing items form an outfit for the theme "${theme}": ${itemSummary}.
+
+Give this outfit a short evocative name, a one-sentence description of the vibe, and a suggested occasion. Write like a fashion editor — grounded and personal, not aspirational marketing speak. Return ONLY JSON:
+{"name": "...", "description": "...", "occasion": "..."}`,
+      },
+    ],
+  });
+
+  const text =
+    response.content.find((b) => b.type === "text")?.text ?? "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+export async function generateStyleProfile(
+  likedTags: string[],
+  dislikedTags: string[]
+): Promise<{
+  aesthetics: string[];
+  colorPalette: string[];
+  avoidColors: string[];
+  formalityRange: { min: number; max: number };
+  notes: string;
+}> {
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 512,
+    messages: [
+      {
+        role: "user",
+        content: `Based on these liked aesthetic tags: ${likedTags.join(", ")} and disliked tags: ${dislikedTags.join(", ")}, create a style profile. Return ONLY JSON:
+{
+  "aesthetics": ["top 3-5 style labels that best describe this person"],
+  "colorPalette": ["preferred color families e.g. neutrals, earth tones, navy"],
+  "avoidColors": ["colors to de-prioritize"],
+  "formalityRange": {"min": 1, "max": 5},
+  "notes": "2-3 sentence plain English summary of their style"
+}`,
+      },
+    ],
+  });
+
+  const text =
+    response.content.find((b) => b.type === "text")?.text ?? "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}

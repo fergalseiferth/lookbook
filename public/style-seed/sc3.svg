@@ -1,0 +1,5 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='400' height='533' viewBox='0 0 400 533'>
+  <rect width='400' height='533' fill='#808080'/>
+  <text x='200' y='256' text-anchor='middle' font-family='Georgia,serif' font-size='16' fill='#cccccc'>Grey blazer</text>
+  <text x='200' y='286' text-anchor='middle' font-family='system-ui' font-size='11' fill='#cccccc' opacity='0.6'>Add photo to /public/style-seed/sc3.jpg</text>
+</svg>
