@@ -2,7 +2,51 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-export async function tagClothingItem(base64Image: string, mediaType: string) {
+type Correction = {
+  category: string;
+  subcategory: string | null;
+  field: string;
+  original: string;
+  corrected: string;
+};
+
+function buildFewShotBlock(corrections: Correction[]): string {
+  if (corrections.length === 0) return "";
+
+  const lines = corrections.map(
+    (c) =>
+      `- ${c.category}${c.subcategory ? ` (${c.subcategory})` : ""}: "${c.field}" was "${c.original}" → corrected to "${c.corrected}"`
+  );
+
+  return `\nPast corrections to learn from — apply these patterns to similar items:
+${lines.join("\n")}\n`;
+}
+
+const BASE_PROMPT = `Analyze this clothing item and return ONLY a JSON object with no preamble or markdown. Be precise and literal — do not guess or over-infer.
+
+{
+  "name": "short descriptive name e.g. 'White oxford shirt'",
+  "category": "one of: tops | bottoms | outerwear | shoes | accessories",
+  "subcategory": "specific type e.g. 'oxford shirt' | 'chino trouser' | 'chelsea boot' | 'crewneck sweatshirt'",
+  "primaryColor": "most dominant color as a simple label e.g. 'navy' | 'off-white' | 'camel' | 'olive' | 'black'",
+  "primaryColorHex": "best estimate hex code for the dominant color e.g. '#1a2a4a'",
+  "secondaryColor": "second color if clearly present, else null — for two-tone fabrics like herringbone or tweed, name the threading color",
+  "pattern": "one of: solid | stripe | check | plaid | herringbone | floral | graphic | textured | other — use 'herringbone' for diagonal tweed/weave patterns",
+  "fabric": "best estimate: cotton | linen | wool | denim | leather | suede | cashmere | synthetic | knit | other",
+  "fit": "one of: slim | regular | relaxed | oversized — assess from the garment shape",
+  "formality": "integer 1-5. Guide: 1=gym/lounge wear, 2=quality leather sneakers (e.g. Nike Blazers) or very casual tops, 3=chinos/smart trousers/overshirts/henleys, 4=blazers/dress shirts/chelsea boots, 5=suits/formal shoes",
+  "seasons": ["array of applicable seasons: spring | summer | fall | winter"],
+  "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
+}`;
+
+export async function tagClothingItem(
+  base64Image: string,
+  mediaType: string,
+  corrections: Correction[] = []
+) {
+  const fewShot = buildFewShotBlock(corrections);
+  const prompt = fewShot ? `${fewShot}\n${BASE_PROMPT}` : BASE_PROMPT;
+
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
@@ -22,34 +66,14 @@ export async function tagClothingItem(base64Image: string, mediaType: string) {
               data: base64Image,
             },
           },
-          {
-            type: "text",
-            text: `Analyze this clothing item and return ONLY a JSON object with no preamble or markdown. Be precise and literal — do not guess or over-infer.
-
-{
-  "name": "short descriptive name e.g. 'White oxford shirt'",
-  "category": "one of: tops | bottoms | outerwear | shoes | accessories",
-  "subcategory": "specific type e.g. 'oxford shirt' | 'chino trouser' | 'chelsea boot' | 'crewneck sweatshirt'",
-  "primaryColor": "most dominant color as a simple label e.g. 'navy' | 'off-white' | 'camel' | 'olive'",
-  "primaryColorHex": "best estimate hex code for the dominant color e.g. '#1a2a4a'",
-  "secondaryColor": "second color if clearly present, else null",
-  "pattern": "one of: solid | stripe | check | plaid | herringbone | floral | graphic | textured | other — use 'herringbone' for diagonal tweed/weave patterns",
-  "fabric": "best estimate: cotton | linen | wool | denim | leather | suede | cashmere | synthetic | knit | other",
-  "fit": "one of: slim | regular | relaxed | oversized — assess from the garment shape",
-  "formality": "integer 1-5. Guide: 1=gym/lounge wear, 2=quality sneakers (e.g. leather Nikes, Blazers) or very casual tops, 3=chinos/smart trousers/overshirts/henleys, 4=blazers/dress shirts/chelsea boots, 5=suits/formal shoes",
-  "seasons": ["array of applicable seasons: spring | summer | fall | winter"],
-  "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
-}`,
-          },
+          { type: "text", text: prompt },
         ],
       },
     ],
   });
 
-  const text =
-    response.content.find((b) => b.type === "text")?.text ?? "";
-  const cleaned = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+  const text = response.content.find((b) => b.type === "text")?.text ?? "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
 export async function nameOutfit(
@@ -82,8 +106,7 @@ Give this outfit a short evocative name, a one-sentence description of the vibe,
     ],
   });
 
-  const text =
-    response.content.find((b) => b.type === "text")?.text ?? "";
+  const text = response.content.find((b) => b.type === "text")?.text ?? "";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
@@ -115,7 +138,6 @@ export async function generateStyleProfile(
     ],
   });
 
-  const text =
-    response.content.find((b) => b.type === "text")?.text ?? "";
+  const text = response.content.find((b) => b.type === "text")?.text ?? "";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }

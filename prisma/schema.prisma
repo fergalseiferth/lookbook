@@ -57,3 +57,15 @@ model WardrobeGap {
   outfitsUnlocked Int
   dismissed       Boolean  @default(false)
 }
+
+// Stores field-level corrections made in the tag review UI.
+// These are injected as few-shot examples in future Claude tagging calls.
+model TagCorrection {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  category    String
+  subcategory String?
+  field       String
+  original    String
+  corrected   String
+}

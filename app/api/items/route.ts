@@ -3,6 +3,39 @@ import { prisma } from "@/lib/prisma";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
+// Fields we diff to detect user corrections
+const DIFFABLE_FIELDS = [
+  "category", "subcategory", "primaryColor", "primaryColorHex",
+  "secondaryColor", "pattern", "fabric", "fit", "formality",
+] as const;
+
+type Tags = Record<string, unknown>;
+
+async function recordCorrections(original: Tags, final: Tags) {
+  const category = String(final.category ?? "");
+  const subcategory = final.subcategory ? String(final.subcategory) : null;
+
+  const corrections: {
+    category: string;
+    subcategory: string | null;
+    field: string;
+    original: string;
+    corrected: string;
+  }[] = [];
+
+  for (const field of DIFFABLE_FIELDS) {
+    const orig = String(original[field] ?? "");
+    const fin = String(final[field] ?? "");
+    if (orig && fin && orig !== fin) {
+      corrections.push({ category, subcategory, field, original: orig, corrected: fin });
+    }
+  }
+
+  if (corrections.length > 0) {
+    await prisma.tagCorrection.createMany({ data: corrections });
+  }
+}
+
 export async function GET() {
   const items = await prisma.clothingItem.findMany({
     where: { active: true },
@@ -15,12 +48,15 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("image") as File | null;
   const tagsJson = formData.get("tags") as string | null;
+  const originalJson = formData.get("originalTags") as string | null;
 
   if (!tagsJson) {
     return NextResponse.json({ error: "tags required" }, { status: 400 });
   }
 
   const tags = JSON.parse(tagsJson);
+  const original = originalJson ? JSON.parse(originalJson) : null;
+
   let imagePath = tags.imagePath ?? "";
 
   if (file) {
@@ -52,6 +88,11 @@ export async function POST(req: NextRequest) {
       notes: tags.notes ?? null,
     },
   });
+
+  // Record any fields the user changed from what Claude suggested
+  if (original) {
+    await recordCorrections(original, tags).catch(console.error);
+  }
 
   return NextResponse.json(item, { status: 201 });
 }

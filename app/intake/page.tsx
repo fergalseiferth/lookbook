@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import TagReview from "@/components/TagReview";
 import Link from "next/link";
@@ -28,11 +28,14 @@ export default function IntakePage() {
   const [file, setFile] = useState<File | null>(null);
   const [imageUrl, setImageUrl] = useState<string>("");
   const [tags, setTags] = useState<Tags | null>(null);
+  const [originalTags, setOriginalTags] = useState<Tags | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [savedCount, setSavedCount] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  const analyzeImage = async (f: File) => {
+  const analyzeImage = useCallback(async (f: File) => {
     setStage("analyzing");
     setError(null);
 
@@ -41,25 +44,29 @@ export default function IntakePage() {
 
     try {
       const res = await fetch("/api/tag", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Tagging failed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "Tagging failed");
+      }
       const data = await res.json();
-      // Normalize
       data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
       data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
       data.formality = Number(data.formality) || 3;
       setTags(data);
+      setOriginalTags(data);
       setStage("review");
-    } catch (e) {
-      setError("Could not analyze the image. Check your ANTHROPIC_API_KEY.");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Could not analyze the image";
+      setError(`${msg}. Check your ANTHROPIC_API_KEY and account credits.`);
       setStage("upload");
     }
-  };
+  }, []);
 
-  const handleFile = (f: File) => {
+  const handleFile = useCallback((f: File) => {
     setFile(f);
     setImageUrl(URL.createObjectURL(f));
     analyzeImage(f);
-  };
+  }, [analyzeImage]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -72,9 +79,13 @@ export default function IntakePage() {
     const formData = new FormData();
     formData.append("image", imageFile);
     formData.append("tags", JSON.stringify(finalTags));
+    if (originalTags) {
+      formData.append("originalTags", JSON.stringify(originalTags));
+    }
 
     const res = await fetch("/api/items", { method: "POST", body: formData });
     if (res.ok) {
+      setSavedCount((n) => n + 1);
       setStage("saved");
     }
     setSaving(false);
@@ -85,14 +96,25 @@ export default function IntakePage() {
     setFile(null);
     setImageUrl("");
     setTags(null);
+    setOriginalTags(null);
     setError(null);
+    // Reset file inputs so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">Add item</h1>
-        <p className="text-sm text-stone-400 mt-0.5">Photo → AI tags → review → save</p>
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">Add item</h1>
+          <p className="text-sm text-stone-400 mt-0.5">Photo → AI tags → review → save</p>
+        </div>
+        {savedCount > 0 && (
+          <span className="text-sm text-stone-400">
+            {savedCount} added this session
+          </span>
+        )}
       </div>
 
       {stage === "upload" && (
@@ -102,21 +124,49 @@ export default function IntakePage() {
               {error}
             </div>
           )}
+
+          {/* Camera button — prominent on mobile */}
+          <button
+            onClick={() => cameraInputRef.current?.click()}
+            className="w-full mb-3 py-4 rounded-2xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium text-base flex items-center justify-center gap-2 hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors md:hidden"
+          >
+            <span className="text-xl">📷</span> Take photo
+          </button>
+
+          {/* Drop zone / browse */}
           <div
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
-            onClick={() => inputRef.current?.click()}
-            className="border-2 border-dashed border-stone-200 dark:border-stone-700 rounded-2xl p-16 text-center cursor-pointer hover:border-stone-400 dark:hover:border-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-all"
+            onClick={() => fileInputRef.current?.click()}
+            className="border-2 border-dashed border-stone-200 dark:border-stone-700 rounded-2xl p-12 text-center cursor-pointer hover:border-stone-400 dark:hover:border-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-all"
           >
-            <div className="text-4xl mb-4">📷</div>
-            <p className="font-medium text-stone-700 dark:text-stone-300">Drop a photo here</p>
-            <p className="text-sm text-stone-400 mt-1">or click to browse</p>
-            <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">Flat-lay or hanger shot works best</p>
+            <div className="text-4xl mb-3">🗂️</div>
+            <p className="font-medium text-stone-700 dark:text-stone-300">
+              Drop a photo here
+            </p>
+            <p className="text-sm text-stone-400 mt-1">or click to browse files</p>
+            <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">
+              Flat-lay or hanger shot · JPEG, PNG, WEBP
+            </p>
           </div>
+
+          {/* Hidden inputs */}
           <input
-            ref={inputRef}
+            ref={fileInputRef}
             type="file"
             accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleFile(f);
+            }}
+          />
+          {/* Camera capture — environment-facing on mobile */}
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -127,15 +177,15 @@ export default function IntakePage() {
       )}
 
       {stage === "analyzing" && (
-        <div className="flex flex-col items-center justify-center py-24 gap-6">
+        <div className="flex flex-col items-center justify-center py-20 gap-5">
           {imageUrl && (
-            <div className="w-32 h-40 relative rounded-xl overflow-hidden">
-              <Image src={imageUrl} alt="Uploading" fill className="object-cover" />
+            <div className="w-28 h-36 relative rounded-xl overflow-hidden shadow-sm">
+              <Image src={imageUrl} alt="Analyzing" fill className="object-cover" />
             </div>
           )}
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-6 h-6 border-2 border-stone-900 dark:border-stone-100 border-t-transparent rounded-full animate-spin" />
-            <p className="text-stone-500">Analyzing with Claude…</p>
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-5 h-5 border-2 border-stone-900 dark:border-stone-100 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm text-stone-500">Analyzing with Claude…</p>
           </div>
         </div>
       )}
@@ -154,13 +204,18 @@ export default function IntakePage() {
       {stage === "saved" && (
         <div className="text-center py-16">
           <div className="text-5xl mb-4">✓</div>
-          <p className="text-xl font-medium text-stone-900 dark:text-stone-100">Item saved</p>
-          <div className="flex gap-4 justify-center mt-8">
+          <p className="text-xl font-medium text-stone-900 dark:text-stone-100">
+            Saved
+          </p>
+          <p className="text-sm text-stone-400 mt-1">
+            {savedCount} item{savedCount !== 1 ? "s" : ""} added this session
+          </p>
+          <div className="flex gap-3 justify-center mt-8">
             <button
               onClick={reset}
               className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors"
             >
-              Add another item
+              Add another
             </button>
             <Link
               href="/closet"
