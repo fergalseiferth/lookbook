@@ -33,10 +33,10 @@ export async function tagClothingItem(base64Image: string, mediaType: string) {
   "primaryColor": "most dominant color as a simple label e.g. 'navy' | 'off-white' | 'camel' | 'olive'",
   "primaryColorHex": "best estimate hex code for the dominant color e.g. '#1a2a4a'",
   "secondaryColor": "second color if clearly present, else null",
-  "pattern": "one of: solid | stripe | check | plaid | floral | graphic | textured | other",
+  "pattern": "one of: solid | stripe | check | plaid | herringbone | floral | graphic | textured | other — use 'herringbone' for diagonal tweed/weave patterns",
   "fabric": "best estimate: cotton | linen | wool | denim | leather | suede | cashmere | synthetic | knit | other",
   "fit": "one of: slim | regular | relaxed | oversized — assess from the garment shape",
-  "formality": "integer 1-5 where 1=very casual (gym clothes), 3=smart casual (dinner with friends), 5=formal (suit jacket)",
+  "formality": "integer 1-5. Guide: 1=gym/lounge wear, 2=quality sneakers (e.g. leather Nikes, Blazers) or very casual tops, 3=chinos/smart trousers/overshirts/henleys, 4=blazers/dress shirts/chelsea boots, 5=suits/formal shoes",
   "seasons": ["array of applicable seasons: spring | summer | fall | winter"],
   "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
 }`,

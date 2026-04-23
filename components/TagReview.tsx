@@ -29,7 +29,7 @@ type Props = {
 };
 
 const CATEGORIES = ["tops", "bottoms", "outerwear", "shoes", "accessories"];
-const PATTERNS = ["solid", "stripe", "check", "plaid", "floral", "graphic", "textured", "other"];
+const PATTERNS = ["solid", "stripe", "check", "plaid", "herringbone", "floral", "graphic", "textured", "other"];
 const FABRICS = ["cotton", "linen", "wool", "denim", "leather", "suede", "cashmere", "synthetic", "knit", "other"];
 const FITS = ["slim", "regular", "relaxed", "oversized"];
 const SEASONS = ["spring", "summer", "fall", "winter"];
