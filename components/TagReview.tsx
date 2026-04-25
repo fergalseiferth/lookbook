@@ -26,6 +26,8 @@ type Props = {
   onSave: (tags: Tags, file: File) => Promise<void>;
   onReanalyze: () => void;
   saving: boolean;
+  onSkip?: () => void;
+  itemProgress?: { current: number; total: number };
 };
 
 const CATEGORIES = ["tops", "bottoms", "outerwear", "shoes", "accessories"];
@@ -35,7 +37,7 @@ const FITS = ["slim", "regular", "relaxed", "oversized"];
 const SEASONS = ["spring", "summer", "fall", "winter"];
 const STYLE_TAG_OPTIONS = ["minimal", "classic", "preppy", "workwear", "streetwear", "earthy", "coastal", "smart-casual", "vintage", "athletic", "bohemian", "utility"];
 
-export default function TagReview({ imageFile, imageUrl, initialTags, onSave, onReanalyze, saving }: Props) {
+export default function TagReview({ imageFile, imageUrl, initialTags, onSave, onReanalyze, saving, onSkip, itemProgress }: Props) {
   const [tags, setTags] = useState<Tags>(initialTags);
 
   const set = <K extends keyof Tags>(key: K, value: Tags[K]) =>
@@ -242,16 +244,24 @@ export default function TagReview({ imageFile, imageUrl, initialTags, onSave, on
         <div className="flex gap-3 pt-2">
           <button
             onClick={onReanalyze}
-            className="flex-1 py-3 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+            className="py-3 px-4 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
           >
             Re-analyze
           </button>
+          {onSkip && (
+            <button
+              onClick={onSkip}
+              className="py-3 px-4 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+            >
+              Skip
+            </button>
+          )}
           <button
             onClick={() => onSave(tags, imageFile)}
             disabled={saving}
             className="flex-1 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors disabled:opacity-50"
           >
-            {saving ? "Saving…" : "Looks good — save"}
+            {saving ? "Saving…" : itemProgress ? `Save & next →` : "Looks good — save"}
           </button>
         </div>
       </div>

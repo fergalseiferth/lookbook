@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import Image from "next/image";
 import TagReview from "@/components/TagReview";
 import Link from "next/link";
@@ -21,26 +21,35 @@ type Tags = {
   notes?: string;
 };
 
-type Stage = "upload" | "analyzing" | "review" | "saved";
+type QueueItem = {
+  id: string;
+  file: File;
+  imageUrl: string;
+  tags?: Tags;
+  originalTags?: Tags;
+  status: "pending" | "analyzing" | "ready" | "saved" | "skipped" | "error";
+  error?: string;
+};
 
 export default function IntakePage() {
-  const [stage, setStage] = useState<Stage>("upload");
-  const [file, setFile] = useState<File | null>(null);
-  const [imageUrl, setImageUrl] = useState<string>("");
-  const [tags, setTags] = useState<Tags | null>(null);
-  const [originalTags, setOriginalTags] = useState<Tags | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [currentIdx, setCurrentIdx] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [savedCount, setSavedCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const analyzingRef = useRef<Set<string>>(new Set());
 
-  const analyzeImage = useCallback(async (f: File) => {
-    setStage("analyzing");
-    setError(null);
+  const updateItem = useCallback((id: string, patch: Partial<QueueItem>) => {
+    setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }, []);
+
+  const analyzeItem = useCallback(async (item: QueueItem) => {
+    if (analyzingRef.current.has(item.id)) return;
+    analyzingRef.current.add(item.id);
+    updateItem(item.id, { status: "analyzing" });
 
     const formData = new FormData();
-    formData.append("image", f);
+    formData.append("image", item.file);
 
     try {
       const res = await fetch("/api/tag", { method: "POST", body: formData });
@@ -52,180 +61,247 @@ export default function IntakePage() {
       data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
       data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
       data.formality = Number(data.formality) || 3;
-      setTags(data);
-      setOriginalTags(data);
-      setStage("review");
+      updateItem(item.id, { status: "ready", tags: data, originalTags: data });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Could not analyze the image";
-      setError(`${msg}. Check your ANTHROPIC_API_KEY and account credits.`);
-      setStage("upload");
+      const msg = e instanceof Error ? e.message : "Analysis failed";
+      updateItem(item.id, { status: "error", error: msg });
+    } finally {
+      analyzingRef.current.delete(item.id);
     }
-  }, []);
+  }, [updateItem]);
 
-  const handleFile = useCallback((f: File) => {
-    setFile(f);
-    setImageUrl(URL.createObjectURL(f));
-    analyzeImage(f);
-  }, [analyzeImage]);
+  // When queue changes, make sure current and next items are being analyzed
+  useEffect(() => {
+    if (queue.length === 0) return;
+
+    // Analyze current and prefetch next
+    [queue[currentIdx], queue[currentIdx + 1]].forEach((item) => {
+      if (item && item.status === "pending") {
+        analyzeItem(item);
+      }
+    });
+  }, [queue, currentIdx, analyzeItem]);
+
+  const addFiles = useCallback((files: File[]) => {
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+
+    const newItems: QueueItem[] = imageFiles.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      imageUrl: URL.createObjectURL(file),
+      status: "pending",
+    }));
+
+    setQueue((prev) => {
+      // If starting fresh, set currentIdx to 0
+      if (prev.length === 0) setCurrentIdx(0);
+      return [...prev, ...newItems];
+    });
+  }, []);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
+    addFiles(Array.from(e.dataTransfer.files));
   };
 
   const handleSave = async (finalTags: Tags, imageFile: File) => {
+    const item = queue[currentIdx];
+    if (!item) return;
+
     setSaving(true);
     const formData = new FormData();
     formData.append("image", imageFile);
     formData.append("tags", JSON.stringify(finalTags));
-    if (originalTags) {
-      formData.append("originalTags", JSON.stringify(originalTags));
+    if (item.originalTags) {
+      formData.append("originalTags", JSON.stringify(item.originalTags));
     }
 
     const res = await fetch("/api/items", { method: "POST", body: formData });
     if (res.ok) {
-      setSavedCount((n) => n + 1);
-      setStage("saved");
+      updateItem(item.id, { status: "saved" });
+      advance();
     }
     setSaving(false);
   };
 
+  const handleSkip = () => {
+    const item = queue[currentIdx];
+    if (item) updateItem(item.id, { status: "skipped" });
+    advance();
+  };
+
+  const advance = () => {
+    setCurrentIdx((prev) => prev + 1);
+  };
+
+  const handleReanalyze = () => {
+    const item = queue[currentIdx];
+    if (!item) return;
+    analyzingRef.current.delete(item.id);
+    analyzeItem(item);
+  };
+
   const reset = () => {
-    setStage("upload");
-    setFile(null);
-    setImageUrl("");
-    setTags(null);
-    setOriginalTags(null);
-    setError(null);
-    // Reset file inputs so the same file can be re-selected
+    setQueue([]);
+    setCurrentIdx(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
 
+  const savedCount = queue.filter((i) => i.status === "saved").length;
+  const skippedCount = queue.filter((i) => i.status === "skipped").length;
+  const doneCount = savedCount + skippedCount + queue.filter((i) => i.status === "error").length;
+  const allDone = queue.length > 0 && currentIdx >= queue.length;
+  const currentItem = queue[currentIdx];
+
+  // ── Empty state / drop zone ──────────────────────────────────────────────
+  if (queue.length === 0) {
+    return (
+      <div>
+        <div className="mb-8">
+          <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">Add items</h1>
+          <p className="text-sm text-stone-400 mt-0.5">Drop all your photos at once — we&apos;ll work through them one by one</p>
+        </div>
+
+        <button
+          onClick={() => cameraInputRef.current?.click()}
+          className="w-full mb-3 py-4 rounded-2xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium flex items-center justify-center gap-2 hover:bg-stone-800 transition-colors md:hidden"
+        >
+          <span className="text-xl">📷</span> Take photo
+        </button>
+
+        <div
+          onDrop={handleDrop}
+          onDragOver={(e) => e.preventDefault()}
+          onClick={() => fileInputRef.current?.click()}
+          className="border-2 border-dashed border-stone-200 dark:border-stone-700 rounded-2xl p-16 text-center cursor-pointer hover:border-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-all"
+        >
+          <div className="text-5xl mb-4">🗂️</div>
+          <p className="font-medium text-stone-700 dark:text-stone-300 text-lg">Drop all your wardrobe photos here</p>
+          <p className="text-sm text-stone-400 mt-1">or click to select — you can select multiple at once</p>
+          <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">JPEG · PNG · WEBP · any quantity</p>
+        </div>
+
+        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
+          onChange={(e) => addFiles(Array.from(e.target.files ?? []))} />
+        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden"
+          onChange={(e) => addFiles(Array.from(e.target.files ?? []))} />
+      </div>
+    );
+  }
+
+  // ── All done ─────────────────────────────────────────────────────────────
+  if (allDone) {
+    return (
+      <div className="text-center py-16">
+        <div className="text-5xl mb-4">✓</div>
+        <p className="text-2xl font-medium text-stone-900 dark:text-stone-100">All done</p>
+        <p className="text-stone-400 mt-2">
+          {savedCount} saved · {skippedCount > 0 ? `${skippedCount} skipped · ` : ""}{queue.filter(i => i.status === "error").length > 0 ? `${queue.filter(i => i.status === "error").length} errored` : ""}
+        </p>
+        <div className="flex gap-3 justify-center mt-8">
+          <button onClick={reset}
+            className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 transition-colors">
+            Add more
+          </button>
+          <Link href="/closet"
+            className="px-6 py-3 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors">
+            View closet →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Reviewing ─────────────────────────────────────────────────────────────
   return (
     <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">Add item</h1>
-          <p className="text-sm text-stone-400 mt-0.5">Photo → AI tags → review → save</p>
-        </div>
-        {savedCount > 0 && (
-          <span className="text-sm text-stone-400">
-            {savedCount} added this session
+      {/* Progress bar */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between text-sm mb-2">
+          <span className="font-medium text-stone-700 dark:text-stone-300">
+            {currentIdx + 1} of {queue.length}
           </span>
-        )}
+          <span className="text-stone-400">
+            {savedCount} saved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
+          </span>
+        </div>
+        <div className="h-1 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-stone-900 dark:bg-stone-100 rounded-full transition-all duration-300"
+            style={{ width: `${(doneCount / queue.length) * 100}%` }}
+          />
+        </div>
       </div>
 
-      {stage === "upload" && (
-        <div>
-          {error && (
-            <div className="mb-4 p-4 rounded-xl bg-red-50 dark:bg-red-950 border border-red-100 dark:border-red-900 text-sm text-red-600 dark:text-red-400">
-              {error}
-            </div>
-          )}
-
-          {/* Camera button — prominent on mobile */}
+      {/* Thumbnail strip */}
+      <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
+        {queue.map((item, i) => (
           <button
-            onClick={() => cameraInputRef.current?.click()}
-            className="w-full mb-3 py-4 rounded-2xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium text-base flex items-center justify-center gap-2 hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors md:hidden"
+            key={item.id}
+            onClick={() => i < currentIdx && setCurrentIdx(i)}
+            className={`relative flex-shrink-0 w-12 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+              i === currentIdx
+                ? "border-stone-900 dark:border-stone-100"
+                : i < currentIdx
+                ? "border-transparent opacity-40 cursor-pointer"
+                : "border-transparent opacity-30 cursor-default"
+            }`}
           >
-            <span className="text-xl">📷</span> Take photo
+            <Image src={item.imageUrl} alt="" fill className="object-cover" />
+            {item.status === "saved" && (
+              <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                <span className="text-white text-xs">✓</span>
+              </div>
+            )}
+            {item.status === "skipped" && (
+              <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                <span className="text-white text-xs">–</span>
+              </div>
+            )}
           </button>
+        ))}
+      </div>
 
-          {/* Drop zone / browse */}
-          <div
-            onDrop={handleDrop}
-            onDragOver={(e) => e.preventDefault()}
-            onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-stone-200 dark:border-stone-700 rounded-2xl p-12 text-center cursor-pointer hover:border-stone-400 dark:hover:border-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-all"
-          >
-            <div className="text-4xl mb-3">🗂️</div>
-            <p className="font-medium text-stone-700 dark:text-stone-300">
-              Drop a photo here
-            </p>
-            <p className="text-sm text-stone-400 mt-1">or click to browse files</p>
-            <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">
-              Flat-lay or hanger shot · JPEG, PNG, WEBP
-            </p>
-          </div>
-
-          {/* Hidden inputs */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFile(f);
-            }}
-          />
-          {/* Camera capture — environment-facing on mobile */}
-          <input
-            ref={cameraInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFile(f);
-            }}
-          />
-        </div>
-      )}
-
-      {stage === "analyzing" && (
+      {/* Current item */}
+      {currentItem?.status === "analyzing" || currentItem?.status === "pending" ? (
         <div className="flex flex-col items-center justify-center py-20 gap-5">
-          {imageUrl && (
-            <div className="w-28 h-36 relative rounded-xl overflow-hidden shadow-sm">
-              <Image src={imageUrl} alt="Analyzing" fill className="object-cover" />
-            </div>
-          )}
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-5 h-5 border-2 border-stone-900 dark:border-stone-100 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm text-stone-500">Analyzing with Claude…</p>
+          <div className="w-32 h-40 relative rounded-xl overflow-hidden shadow-sm">
+            <Image src={currentItem.imageUrl} alt="Analyzing" fill className="object-cover" />
+          </div>
+          <div className="flex items-center gap-2 text-stone-400">
+            <div className="w-4 h-4 border-2 border-stone-400 border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm">Analyzing with Claude…</span>
           </div>
         </div>
-      )}
-
-      {stage === "review" && tags && file && (
-        <TagReview
-          imageFile={file}
-          imageUrl={imageUrl}
-          initialTags={tags}
-          onSave={handleSave}
-          onReanalyze={() => analyzeImage(file)}
-          saving={saving}
-        />
-      )}
-
-      {stage === "saved" && (
-        <div className="text-center py-16">
-          <div className="text-5xl mb-4">✓</div>
-          <p className="text-xl font-medium text-stone-900 dark:text-stone-100">
-            Saved
-          </p>
-          <p className="text-sm text-stone-400 mt-1">
-            {savedCount} item{savedCount !== 1 ? "s" : ""} added this session
-          </p>
-          <div className="flex gap-3 justify-center mt-8">
-            <button
-              onClick={reset}
-              className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors"
-            >
-              Add another
+      ) : currentItem?.status === "error" ? (
+        <div className="text-center py-12">
+          <p className="text-stone-500 mb-1">Could not analyze this photo</p>
+          <p className="text-sm text-red-400 mb-6">{currentItem.error}</p>
+          <div className="flex gap-3 justify-center">
+            <button onClick={handleReanalyze}
+              className="px-5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 text-sm text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors">
+              Try again
             </button>
-            <Link
-              href="/closet"
-              className="px-6 py-3 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
-            >
-              View closet
-            </Link>
+            <button onClick={handleSkip}
+              className="px-5 py-2.5 rounded-xl text-sm text-stone-400 hover:text-stone-600 transition-colors">
+              Skip
+            </button>
           </div>
         </div>
-      )}
+      ) : currentItem?.status === "ready" && currentItem.tags ? (
+        <TagReview
+          imageFile={currentItem.file}
+          imageUrl={currentItem.imageUrl}
+          initialTags={currentItem.tags}
+          onSave={handleSave}
+          onReanalyze={handleReanalyze}
+          saving={saving}
+          onSkip={handleSkip}
+          itemProgress={{ current: currentIdx + 1, total: queue.length }}
+        />
+      ) : null}
     </div>
   );
 }
