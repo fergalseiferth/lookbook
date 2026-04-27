@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import TagReview from "@/components/TagReview";
 import Link from "next/link";
@@ -37,16 +37,27 @@ export default function IntakePage() {
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  const analyzingRef = useRef<Set<string>>(new Set());
+
+  // Authoritative ref — always in sync with state, readable in async closures
+  const queueRef = useRef<QueueItem[]>([]);
+  const analyzingIds = useRef<Set<string>>(new Set());
 
   const updateItem = useCallback((id: string, patch: Partial<QueueItem>) => {
-    setQueue((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    setQueue((prev) => {
+      const next = prev.map((item) => (item.id === id ? { ...item, ...patch } : item));
+      queueRef.current = next;
+      return next;
+    });
   }, []);
 
-  const analyzeItem = useCallback(async (item: QueueItem) => {
-    if (analyzingRef.current.has(item.id)) return;
-    analyzingRef.current.add(item.id);
-    updateItem(item.id, { status: "analyzing" });
+  // analyzeItem reads from queueRef so it always sees fresh data, never a stale closure
+  const analyzeItem = useCallback(async (id: string) => {
+    if (analyzingIds.current.has(id)) return;
+    const item = queueRef.current.find((i) => i.id === id);
+    if (!item || item.status !== "pending") return;
+
+    analyzingIds.current.add(id);
+    updateItem(id, { status: "analyzing" });
 
     const formData = new FormData();
     formData.append("image", item.file);
@@ -61,26 +72,24 @@ export default function IntakePage() {
       data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
       data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
       data.formality = Number(data.formality) || 3;
-      updateItem(item.id, { status: "ready", tags: data, originalTags: data });
+      updateItem(id, { status: "ready", tags: data, originalTags: data });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Analysis failed";
-      updateItem(item.id, { status: "error", error: msg });
+      updateItem(id, { status: "error", error: msg });
     } finally {
-      analyzingRef.current.delete(item.id);
+      analyzingIds.current.delete(id);
     }
   }, [updateItem]);
 
-  // When queue changes, make sure current and next items are being analyzed
-  useEffect(() => {
-    if (queue.length === 0) return;
-
-    // Analyze current and prefetch next
-    [queue[currentIdx], queue[currentIdx + 1]].forEach((item) => {
+  // Kick analysis for current + next item — reads queueRef so always fresh
+  const kickAnalysis = useCallback((idx: number) => {
+    const q = queueRef.current;
+    [q[idx], q[idx + 1]].forEach((item) => {
       if (item && item.status === "pending") {
-        analyzeItem(item);
+        analyzeItem(item.id);
       }
     });
-  }, [queue, currentIdx, analyzeItem]);
+  }, [analyzeItem]);
 
   const addFiles = useCallback((files: File[]) => {
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
@@ -90,15 +99,24 @@ export default function IntakePage() {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       file,
       imageUrl: URL.createObjectURL(file),
-      status: "pending",
+      status: "pending" as const,
     }));
 
     setQueue((prev) => {
-      // If starting fresh, set currentIdx to 0
-      if (prev.length === 0) setCurrentIdx(0);
-      return [...prev, ...newItems];
+      const isFirstBatch = prev.length === 0;
+      const next = [...prev, ...newItems];
+      queueRef.current = next;
+      // Kick after state flush
+      const startIdx = isFirstBatch ? 0 : currentIdxRef.current;
+      setTimeout(() => kickAnalysis(startIdx), 0);
+      return next;
     });
-  }, []);
+
+    if (queueRef.current.length === 0) {
+      setCurrentIdx(0);
+      currentIdxRef.current = 0;
+    }
+  }, [kickAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -106,7 +124,7 @@ export default function IntakePage() {
   };
 
   const handleSave = async (finalTags: Tags, imageFile: File) => {
-    const item = queue[currentIdx];
+    const item = queueRef.current[currentIdxRef.current];
     if (!item) return;
 
     setSaving(true);
@@ -126,25 +144,37 @@ export default function IntakePage() {
   };
 
   const handleSkip = () => {
-    const item = queue[currentIdx];
+    const item = queueRef.current[currentIdxRef.current];
     if (item) updateItem(item.id, { status: "skipped" });
     advance();
   };
 
+  // Ref to track currentIdx synchronously (needed inside setQueue updaters)
+  const currentIdxRef = useRef(0);
+
   const advance = () => {
-    setCurrentIdx((prev) => prev + 1);
+    setCurrentIdx((prev) => {
+      const next = prev + 1;
+      currentIdxRef.current = next;
+      kickAnalysis(next);
+      return next;
+    });
   };
 
   const handleReanalyze = () => {
-    const item = queue[currentIdx];
+    const item = queueRef.current[currentIdxRef.current];
     if (!item) return;
-    analyzingRef.current.delete(item.id);
-    analyzeItem(item);
+    analyzingIds.current.delete(item.id);
+    updateItem(item.id, { status: "pending" });
+    setTimeout(() => analyzeItem(item.id), 0);
   };
 
   const reset = () => {
     setQueue([]);
+    queueRef.current = [];
     setCurrentIdx(0);
+    currentIdxRef.current = 0;
+    analyzingIds.current.clear();
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
@@ -198,7 +228,7 @@ export default function IntakePage() {
         <div className="text-5xl mb-4">✓</div>
         <p className="text-2xl font-medium text-stone-900 dark:text-stone-100">All done</p>
         <p className="text-stone-400 mt-2">
-          {savedCount} saved · {skippedCount > 0 ? `${skippedCount} skipped · ` : ""}{queue.filter(i => i.status === "error").length > 0 ? `${queue.filter(i => i.status === "error").length} errored` : ""}
+          {savedCount} saved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}{queue.filter(i => i.status === "error").length > 0 ? ` · ${queue.filter(i => i.status === "error").length} errored` : ""}
         </p>
         <div className="flex gap-3 justify-center mt-8">
           <button onClick={reset}
@@ -240,7 +270,13 @@ export default function IntakePage() {
         {queue.map((item, i) => (
           <button
             key={item.id}
-            onClick={() => i < currentIdx && setCurrentIdx(i)}
+            onClick={() => {
+              if (i < currentIdx) {
+                setCurrentIdx(i);
+                currentIdxRef.current = i;
+                kickAnalysis(i);
+              }
+            }}
             className={`relative flex-shrink-0 w-12 h-16 rounded-lg overflow-hidden border-2 transition-all ${
               i === currentIdx
                 ? "border-stone-900 dark:border-stone-100"
