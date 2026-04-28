@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -45,31 +46,34 @@ export async function tagClothingItem(
   corrections: Correction[] = []
 ) {
   const fewShot = buildFewShotBlock(corrections);
-  const prompt = fewShot ? `${fewShot}\n${BASE_PROMPT}` : BASE_PROMPT;
+
+  // BASE_PROMPT goes in system with cache_control so it's cached across the
+  // bulk intake session — only the image (and optional few-shot) vary per call.
+  const userContent: MessageParam["content"] = [
+    {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+        data: base64Image,
+      },
+    },
+  ];
+  if (fewShot) {
+    userContent.push({ type: "text", text: fewShot });
+  }
 
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
-    messages: [
+    system: [
       {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mediaType as
-                | "image/jpeg"
-                | "image/png"
-                | "image/gif"
-                | "image/webp",
-              data: base64Image,
-            },
-          },
-          { type: "text", text: prompt },
-        ],
+        type: "text",
+        text: BASE_PROMPT,
+        cache_control: { type: "ephemeral" },
       },
     ],
+    messages: [{ role: "user", content: userContent }],
   });
 
   const text = response.content.find((b) => b.type === "text")?.text ?? "";

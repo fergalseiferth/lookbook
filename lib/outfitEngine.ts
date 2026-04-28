@@ -41,20 +41,30 @@ function formalityTightness(items: ClothingItem[]): number {
   return Math.max(0, 1 - spread / 4);
 }
 
-function styleTagAlignment(items: ClothingItem[]): number {
+function styleTagAlignment(items: ClothingItem[], preferredAesthetics: string[] = []): number {
   try {
     const tagSets = items.map((i) => new Set<string>(JSON.parse(i.styleTags)));
-    if (tagSets.length <= 1) return 1;
+
+    // Inter-item overlap
     let shared = 0;
     let total = 0;
     for (let i = 0; i < tagSets.length; i++) {
       for (let j = i + 1; j < tagSets.length; j++) {
         total++;
-        const intersection = Array.from(tagSets[i]).filter((t) => tagSets[j].has(t));
-        if (intersection.length > 0) shared++;
+        if (Array.from(tagSets[i]).some((t) => tagSets[j].has(t))) shared++;
       }
     }
-    return total === 0 ? 1 : shared / total;
+    const interItemScore = total === 0 ? 1 : shared / total;
+
+    if (preferredAesthetics.length === 0) return interItemScore;
+
+    // How many items match user's style profile
+    const matchCount = tagSets.filter((ts) =>
+      preferredAesthetics.some((a) => ts.has(a))
+    ).length;
+    const aestheticScore = matchCount / items.length;
+
+    return interItemScore * 0.5 + aestheticScore * 0.5;
   } catch {
     return 0.5;
   }
@@ -63,7 +73,8 @@ function styleTagAlignment(items: ClothingItem[]): number {
 export function generateOutfits(
   items: ClothingItem[],
   theme: string,
-  limit = 20
+  limit = 20,
+  preferredAesthetics: string[] = []
 ): GeneratedOutfit[] {
   const config = THEMES[theme];
   if (!config) return [];
@@ -108,24 +119,24 @@ export function generateOutfits(
           const cs = outfitColorScore(outfit);
           if (cs < 0.6) return;
           const fs = formalityTightness(outfit);
-          const ts = styleTagAlignment(outfit);
+          const ts = styleTagAlignment(outfit, preferredAesthetics);
           const totalScore = cs * 0.5 + fs * 0.3 + ts * 0.2;
           candidates.push({ items: outfit, theme, colorScore: cs, formalityScore: fs, totalScore });
         };
 
+        const compatibleOuter = outerwear.filter((o) => seasonsOverlap(top.seasons, o.seasons));
+        const compatibleAcc = accessories.filter((a) => seasonsOverlap(top.seasons, a.seasons));
+
         if (config.requiresOuterwear) {
-          const compatibleOuter = outerwear.filter((o) =>
-            seasonsOverlap(top.seasons, o.seasons)
-          );
           if (compatibleOuter.length === 0) continue;
           for (const outer of compatibleOuter) {
             buildOutfit([outer]);
+            for (const acc of compatibleAcc) buildOutfit([outer, acc]);
           }
         } else {
           buildOutfit([]);
-          for (const outer of outerwear.filter((o) =>
-            seasonsOverlap(top.seasons, o.seasons)
-          )) {
+          for (const acc of compatibleAcc) buildOutfit([acc]);
+          for (const outer of compatibleOuter) {
             buildOutfit([outer]);
           }
         }

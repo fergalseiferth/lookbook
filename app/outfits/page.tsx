@@ -70,8 +70,13 @@ export default function OutfitsPage() {
     });
     const data = await res.json();
     if (data.outfits?.length > 0) {
-      setOutfits((prev) => [...data.outfits, ...prev]);
+      // Replace outfits for this theme (server cleared old non-saved ones)
+      setOutfits((prev) => [
+        ...data.outfits,
+        ...prev.filter((o) => o.theme !== generateTheme || o.saved),
+      ]);
       setTheme(generateTheme);
+      setMessage(`Generated ${data.outfits.length} outfits`);
     } else {
       setMessage(data.message ?? "Not enough items. Add more to your closet first.");
     }

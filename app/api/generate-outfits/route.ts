@@ -11,14 +11,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid theme" }, { status: 400 });
   }
 
-  const dbItems = await prisma.clothingItem.findMany({ where: { active: true } });
+  const [dbItems, styleProfile] = await Promise.all([
+    prisma.clothingItem.findMany({ where: { active: true } }),
+    prisma.styleProfile.findFirst({ orderBy: { updatedAt: "desc" } }),
+  ]);
+
   const items: ClothingItem[] = dbItems as ClothingItem[];
 
-  const generated = generateOutfits(items, theme, 20);
+  let preferredAesthetics: string[] = [];
+  if (styleProfile?.aesthetics) {
+    try { preferredAesthetics = JSON.parse(styleProfile.aesthetics); } catch { /* ignore */ }
+  }
+
+  const generated = generateOutfits(items, theme, 20, preferredAesthetics);
 
   if (generated.length === 0) {
-    return NextResponse.json({ outfits: [], message: "Not enough items to generate outfits for this theme" });
+    return NextResponse.json({ outfits: [], message: "Not enough items to generate outfits for this theme. Make sure you have tops, bottoms, and shoes that fit the formality range." });
   }
+
+  // Clear old non-saved outfits for this theme before inserting fresh ones
+  await prisma.outfit.deleteMany({ where: { theme, saved: false } });
 
   // Name the top outfits via Claude (limit to 10 to avoid rate limits)
   const toName = generated.slice(0, 10);
@@ -34,7 +46,6 @@ export async function POST(req: NextRequest) {
     })
   );
 
-  // Persist to DB
   const saved = await Promise.all(
     named.map((o) =>
       prisma.outfit.create({
@@ -49,5 +60,5 @@ export async function POST(req: NextRequest) {
     )
   );
 
-  return NextResponse.json({ outfits: saved });
+  return NextResponse.json({ outfits: saved, count: saved.length });
 }
