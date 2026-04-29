@@ -35,12 +35,20 @@ export default function IntakePage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [autoMode, setAutoMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  // Authoritative ref — always in sync with state, readable in async closures
+  // Refs — readable from async callbacks without stale closure issues
   const queueRef = useRef<QueueItem[]>([]);
+  const currentIdxRef = useRef(0);
   const analyzingIds = useRef<Set<string>>(new Set());
+  const autoModeRef = useRef(false);
+
+  const syncAutoMode = (val: boolean) => {
+    autoModeRef.current = val;
+    setAutoMode(val);
+  };
 
   const updateItem = useCallback((id: string, patch: Partial<QueueItem>) => {
     setQueue((prev) => {
@@ -50,7 +58,21 @@ export default function IntakePage() {
     });
   }, []);
 
-  // analyzeItem reads from queueRef so it always sees fresh data, never a stale closure
+  // After each item finishes (success, error, or auto-save), chain to the next pending one.
+  // This keeps analysis strictly sequential — no parallel Claude calls.
+  const chainNext = useCallback((finishedId: string) => {
+    const q = queueRef.current;
+    const finishedIdx = q.findIndex((i) => i.id === finishedId);
+    // Look forward from finished item for the next pending one
+    for (let i = finishedIdx + 1; i < q.length; i++) {
+      if (q[i].status === "pending") {
+        // Small gap between calls to avoid rate-limit edge cases
+        setTimeout(() => analyzeItem(q[i].id), 300);
+        return;
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const analyzeItem = useCallback(async (id: string) => {
     if (analyzingIds.current.has(id)) return;
     const item = queueRef.current.find((i) => i.id === id);
@@ -72,23 +94,38 @@ export default function IntakePage() {
       data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
       data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
       data.formality = Number(data.formality) || 3;
-      updateItem(id, { status: "ready", tags: data, originalTags: data });
+
+      if (autoModeRef.current) {
+        // Auto mode: save immediately, no review
+        const saveForm = new FormData();
+        saveForm.append("image", item.file);
+        saveForm.append("tags", JSON.stringify(data));
+        const saveRes = await fetch("/api/items", { method: "POST", body: saveForm });
+        if (saveRes.ok) {
+          updateItem(id, { status: "saved" });
+          setCurrentIdx((prev) => {
+            const next = prev + 1;
+            currentIdxRef.current = next;
+            return next;
+          });
+        } else {
+          updateItem(id, { status: "error", error: "Save failed" });
+        }
+      } else {
+        updateItem(id, { status: "ready", tags: data, originalTags: data });
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Analysis failed";
       updateItem(id, { status: "error", error: msg });
     } finally {
       analyzingIds.current.delete(id);
+      chainNext(id);
     }
-  }, [updateItem]);
+  }, [updateItem, chainNext]);
 
-  // Kick analysis for current + next item — reads queueRef so always fresh
-  const kickAnalysis = useCallback((idx: number) => {
-    const q = queueRef.current;
-    [q[idx], q[idx + 1]].forEach((item) => {
-      if (item && item.status === "pending") {
-        analyzeItem(item.id);
-      }
-    });
+  const kickFirst = useCallback(() => {
+    const first = queueRef.current.find((i) => i.status === "pending");
+    if (first) analyzeItem(first.id);
   }, [analyzeItem]);
 
   const addFiles = useCallback((files: File[]) => {
@@ -102,21 +139,22 @@ export default function IntakePage() {
       status: "pending" as const,
     }));
 
+    const isFirstBatch = queueRef.current.length === 0;
+
     setQueue((prev) => {
-      const isFirstBatch = prev.length === 0;
       const next = [...prev, ...newItems];
       queueRef.current = next;
-      // Kick after state flush
-      const startIdx = isFirstBatch ? 0 : currentIdxRef.current;
-      setTimeout(() => kickAnalysis(startIdx), 0);
       return next;
     });
 
-    if (queueRef.current.length === 0) {
+    if (isFirstBatch) {
       setCurrentIdx(0);
       currentIdxRef.current = 0;
+      // Kick the chain after state flushes
+      setTimeout(kickFirst, 0);
     }
-  }, [kickAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
+    // If not first batch, the chain from the existing active analysis will reach the new items
+  }, [kickFirst]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -149,14 +187,15 @@ export default function IntakePage() {
     advance();
   };
 
-  // Ref to track currentIdx synchronously (needed inside setQueue updaters)
-  const currentIdxRef = useRef(0);
-
   const advance = () => {
     setCurrentIdx((prev) => {
       const next = prev + 1;
       currentIdxRef.current = next;
-      kickAnalysis(next);
+      // If the next item hasn't been kicked yet (e.g. user skipped ahead), kick it
+      const nextItem = queueRef.current[next];
+      if (nextItem?.status === "pending" && !analyzingIds.current.has(nextItem.id)) {
+        setTimeout(() => analyzeItem(nextItem.id), 0);
+      }
       return next;
     });
   };
@@ -181,17 +220,47 @@ export default function IntakePage() {
 
   const savedCount = queue.filter((i) => i.status === "saved").length;
   const skippedCount = queue.filter((i) => i.status === "skipped").length;
-  const doneCount = savedCount + skippedCount + queue.filter((i) => i.status === "error").length;
+  const errorCount = queue.filter((i) => i.status === "error").length;
+  const doneCount = savedCount + skippedCount + errorCount;
   const allDone = queue.length > 0 && currentIdx >= queue.length;
   const currentItem = queue[currentIdx];
+  const analyzingCount = queue.filter((i) => i.status === "analyzing").length;
 
-  // ── Empty state / drop zone ──────────────────────────────────────────────
+  // ── Empty state ───────────────────────────────────────────────────────────
   if (queue.length === 0) {
     return (
       <div>
-        <div className="mb-8">
+        <div className="mb-6">
           <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">Add items</h1>
-          <p className="text-sm text-stone-400 mt-0.5">Drop all your photos at once — we&apos;ll work through them one by one</p>
+          <p className="text-sm text-stone-400 mt-0.5">
+            Drop all your photos at once — Claude tags each one automatically
+          </p>
+        </div>
+
+        {/* Mode toggle */}
+        <div className="flex items-center justify-between p-4 rounded-xl bg-stone-50 dark:bg-stone-800/50 mb-4">
+          <div>
+            <p className="text-sm font-medium text-stone-700 dark:text-stone-300">
+              {autoMode ? "Auto-save mode" : "Review mode"}
+            </p>
+            <p className="text-xs text-stone-400 mt-0.5">
+              {autoMode
+                ? "Claude saves everything automatically — come back when done"
+                : "Review and edit each item before saving"}
+            </p>
+          </div>
+          <button
+            onClick={() => syncAutoMode(!autoMode)}
+            className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${
+              autoMode ? "bg-stone-900 dark:bg-stone-100" : "bg-stone-200 dark:bg-stone-700"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white dark:bg-stone-900 shadow transition-transform ${
+                autoMode ? "translate-x-5" : "translate-x-0"
+              }`}
+            />
+          </button>
         </div>
 
         <button
@@ -208,35 +277,57 @@ export default function IntakePage() {
           className="border-2 border-dashed border-stone-200 dark:border-stone-700 rounded-2xl p-16 text-center cursor-pointer hover:border-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/30 transition-all"
         >
           <div className="text-5xl mb-4">🗂️</div>
-          <p className="font-medium text-stone-700 dark:text-stone-300 text-lg">Drop all your wardrobe photos here</p>
-          <p className="text-sm text-stone-400 mt-1">or click to select — you can select multiple at once</p>
-          <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">JPEG · PNG · WEBP · any quantity</p>
+          <p className="font-medium text-stone-700 dark:text-stone-300 text-lg">
+            Drop all your wardrobe photos here
+          </p>
+          <p className="text-sm text-stone-400 mt-1">
+            or click to select — select all {queue.length > 0 ? "remaining " : ""}photos at once
+          </p>
+          <p className="text-xs text-stone-300 dark:text-stone-600 mt-3">JPEG · PNG · WEBP</p>
         </div>
 
-        <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden"
-          onChange={(e) => addFiles(Array.from(e.target.files ?? []))} />
-        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden"
-          onChange={(e) => addFiles(Array.from(e.target.files ?? []))} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => addFiles(Array.from(e.target.files ?? []))}
+        />
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => addFiles(Array.from(e.target.files ?? []))}
+        />
       </div>
     );
   }
 
-  // ── All done ─────────────────────────────────────────────────────────────
+  // ── All done ──────────────────────────────────────────────────────────────
   if (allDone) {
     return (
       <div className="text-center py-16">
         <div className="text-5xl mb-4">✓</div>
         <p className="text-2xl font-medium text-stone-900 dark:text-stone-100">All done</p>
         <p className="text-stone-400 mt-2">
-          {savedCount} saved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}{queue.filter(i => i.status === "error").length > 0 ? ` · ${queue.filter(i => i.status === "error").length} errored` : ""}
+          {savedCount} saved
+          {skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
+          {errorCount > 0 ? ` · ${errorCount} failed` : ""}
         </p>
         <div className="flex gap-3 justify-center mt-8">
-          <button onClick={reset}
-            className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 transition-colors">
+          <button
+            onClick={reset}
+            className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 transition-colors"
+          >
             Add more
           </button>
-          <Link href="/closet"
-            className="px-6 py-3 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors">
+          <Link
+            href="/closet"
+            className="px-6 py-3 rounded-xl border border-stone-200 dark:border-stone-700 text-sm font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+          >
             View closet →
           </Link>
         </div>
@@ -244,18 +335,89 @@ export default function IntakePage() {
     );
   }
 
-  // ── Reviewing ─────────────────────────────────────────────────────────────
+  // ── Auto-save progress view ───────────────────────────────────────────────
+  if (autoMode) {
+    return (
+      <div>
+        <div className="mb-6 flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-medium text-stone-900 dark:text-stone-100">
+              Auto-saving…
+            </h1>
+            <p className="text-sm text-stone-400 mt-0.5">
+              {savedCount} of {queue.length} saved
+              {analyzingCount > 0 ? " · analyzing…" : ""}
+            </p>
+          </div>
+          <button
+            onClick={() => syncAutoMode(false)}
+            className="px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 text-xs text-stone-500 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+          >
+            Pause & review
+          </button>
+        </div>
+
+        {/* Progress bar */}
+        <div className="h-2 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden mb-6">
+          <div
+            className="h-full bg-stone-900 dark:bg-stone-100 rounded-full transition-all duration-500"
+            style={{ width: `${(savedCount / queue.length) * 100}%` }}
+          />
+        </div>
+
+        {/* Thumbnail grid */}
+        <div className="grid grid-cols-5 sm:grid-cols-8 gap-1.5">
+          {queue.map((item) => (
+            <div key={item.id} className="relative aspect-square rounded-lg overflow-hidden bg-stone-100 dark:bg-stone-800">
+              <Image src={item.imageUrl} alt="" fill className="object-cover" />
+              {item.status === "saved" && (
+                <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                  <span className="text-white text-lg">✓</span>
+                </div>
+              )}
+              {item.status === "analyzing" && (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+              {item.status === "error" && (
+                <div className="absolute inset-0 bg-red-900/40 flex items-center justify-center">
+                  <span className="text-white text-sm">✕</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {errorCount > 0 && (
+          <p className="text-xs text-stone-400 mt-4 text-center">
+            {errorCount} item{errorCount > 1 ? "s" : ""} failed — pause to retry them manually
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // ── Manual review ─────────────────────────────────────────────────────────
   return (
     <div>
       {/* Progress bar */}
-      <div className="mb-6">
+      <div className="mb-4">
         <div className="flex items-center justify-between text-sm mb-2">
           <span className="font-medium text-stone-700 dark:text-stone-300">
             {currentIdx + 1} of {queue.length}
           </span>
-          <span className="text-stone-400">
-            {savedCount} saved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-stone-400">
+              {savedCount} saved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
+            </span>
+            <button
+              onClick={() => syncAutoMode(true)}
+              className="text-xs text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 underline underline-offset-2 transition-colors"
+            >
+              Auto-save rest
+            </button>
+          </div>
         </div>
         <div className="h-1 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden">
           <div
@@ -274,7 +436,6 @@ export default function IntakePage() {
               if (i < currentIdx) {
                 setCurrentIdx(i);
                 currentIdxRef.current = i;
-                kickAnalysis(i);
               }
             }}
             className={`relative flex-shrink-0 w-12 h-16 rounded-lg overflow-hidden border-2 transition-all ${
@@ -294,6 +455,11 @@ export default function IntakePage() {
             {item.status === "skipped" && (
               <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
                 <span className="text-white text-xs">–</span>
+              </div>
+            )}
+            {item.status === "analyzing" && i !== currentIdx && (
+              <div className="absolute bottom-1 right-1">
+                <div className="w-2 h-2 border border-white border-t-transparent rounded-full animate-spin" />
               </div>
             )}
           </button>
@@ -316,12 +482,16 @@ export default function IntakePage() {
           <p className="text-stone-500 mb-1">Could not analyze this photo</p>
           <p className="text-sm text-red-400 mb-6">{currentItem.error}</p>
           <div className="flex gap-3 justify-center">
-            <button onClick={handleReanalyze}
-              className="px-5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 text-sm text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors">
+            <button
+              onClick={handleReanalyze}
+              className="px-5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 text-sm text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors"
+            >
               Try again
             </button>
-            <button onClick={handleSkip}
-              className="px-5 py-2.5 rounded-xl text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            <button
+              onClick={handleSkip}
+              className="px-5 py-2.5 rounded-xl text-sm text-stone-400 hover:text-stone-600 transition-colors"
+            >
               Skip
             </button>
           </div>
