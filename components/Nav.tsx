@@ -18,8 +18,11 @@ export default function Nav() {
   return (
     <header className="sticky top-0 z-50 bg-white/90 dark:bg-stone-950/90 backdrop-blur-sm border-b border-stone-100 dark:border-stone-800">
       <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
-        <Link href="/today" className="font-medium text-stone-900 dark:text-stone-100 tracking-tight">
+        <Link href="/today" className="flex items-baseline gap-2 font-medium text-stone-900 dark:text-stone-100 tracking-tight">
           lookbook
+          <span className="text-[10px] font-mono text-stone-300 dark:text-stone-600">
+            {process.env.NEXT_PUBLIC_BUILD_ID}
+          </span>
         </Link>
         <nav className="flex items-center gap-1">
           {links.map(({ href, label }) => {
