@@ -50,7 +50,7 @@ function extractJson(text: string): unknown {
   }
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+async function callWithRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -58,9 +58,10 @@ async function callWithRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> 
     } catch (err) {
       lastErr = err;
       const status = (err as { status?: number })?.status;
-      if (status === 401 || status === 400) throw err;
+      // Don't retry on 4xx (auth, bad input, etc) — only on transient/server errors
+      if (status && status >= 400 && status < 500) throw err;
       if (i < attempts - 1) {
-        await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
+        await new Promise((r) => setTimeout(r, 600));
       }
     }
   }
