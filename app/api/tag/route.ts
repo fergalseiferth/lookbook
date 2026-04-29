@@ -27,6 +27,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(tags);
   } catch (err) {
     console.error("Claude tagging error:", err);
-    return NextResponse.json({ error: "Tagging failed" }, { status: 500 });
+    const msg = err instanceof Error ? err.message : "Tagging failed";
+    const status = (err as { status?: number })?.status;
+    return NextResponse.json(
+      { error: msg, status },
+      { status: 500 }
+    );
   }
 }

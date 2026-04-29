@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import Image from "next/image";
 import TagReview from "@/components/TagReview";
 import Link from "next/link";
@@ -39,116 +39,123 @@ export default function IntakePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
+  // Synchronous mirrors so async loops always see the latest state
   const queueRef = useRef<QueueItem[]>([]);
-  const currentIdxRef = useRef(0);
-  const analyzingIds = useRef<Set<string>>(new Set());
   const autoModeRef = useRef(false);
-  // Stable ref to analyzeItem so the chain closure is never stale
-  const analyzeItemRef = useRef<(id: string) => void>(() => {});
+  const workerRunningRef = useRef(false);
+
+  const setQueueAndRef = useCallback(
+    (updater: (prev: QueueItem[]) => QueueItem[]) => {
+      setQueue((prev) => {
+        const next = updater(prev);
+        queueRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const updateItem = useCallback(
+    (id: string, patch: Partial<QueueItem>) => {
+      setQueueAndRef((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+      );
+    },
+    [setQueueAndRef]
+  );
 
   const syncAutoMode = (val: boolean) => {
     autoModeRef.current = val;
     setAutoMode(val);
+    // If switching ON during a session, kick the worker to process any pending items
+    if (val) startWorker();
   };
 
-  const updateItem = useCallback((id: string, patch: Partial<QueueItem>) => {
-    setQueue((prev) => {
-      const next = prev.map((item) => (item.id === id ? { ...item, ...patch } : item));
-      queueRef.current = next;
-      return next;
-    });
-  }, []);
+  // Process a single item end-to-end (tag + optionally save)
+  const processOne = useCallback(
+    async (id: string) => {
+      const item = queueRef.current.find((i) => i.id === id);
+      if (!item || item.status !== "pending") return;
 
-  const analyzeItem = useCallback(async (id: string) => {
-    if (analyzingIds.current.has(id)) return;
-    const item = queueRef.current.find((i) => i.id === id);
-    if (!item || item.status !== "pending") return;
+      updateItem(id, { status: "analyzing" });
 
-    analyzingIds.current.add(id);
-    updateItem(id, { status: "analyzing" });
-
-    const formData = new FormData();
-    formData.append("image", item.file);
-
-    try {
-      const res = await fetch("/api/tag", { method: "POST", body: formData });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "Tagging failed");
-      }
-      const data = await res.json();
-      data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
-      data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
-      data.formality = Number(data.formality) || 3;
-
-      if (autoModeRef.current) {
-        const saveForm = new FormData();
-        saveForm.append("image", item.file);
-        saveForm.append("tags", JSON.stringify(data));
-        const saveRes = await fetch("/api/items", { method: "POST", body: saveForm });
-        updateItem(id, { status: saveRes.ok ? "saved" : "error", ...(saveRes.ok ? {} : { error: "Save failed" }) });
-      } else {
-        updateItem(id, { status: "ready", tags: data, originalTags: data });
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Analysis failed";
-      updateItem(id, { status: "error", error: msg });
-    } finally {
-      analyzingIds.current.delete(id);
-      // Always advance currentIdx in auto mode (success or error) so allDone triggers correctly
-      if (autoModeRef.current) {
-        setCurrentIdx((prev) => {
-          const next = prev + 1;
-          currentIdxRef.current = next;
-          return next;
-        });
-      }
-      // Chain: find next pending item and analyze it (sequential — one call at a time)
-      const q = queueRef.current;
-      const doneIdx = q.findIndex((i) => i.id === id);
-      for (let i = doneIdx + 1; i < q.length; i++) {
-        if (q[i].status === "pending") {
-          const nextId = q[i].id;
-          setTimeout(() => analyzeItemRef.current(nextId), 300);
-          break;
+      try {
+        const formData = new FormData();
+        formData.append("image", item.file);
+        const res = await fetch("/api/tag", { method: "POST", body: formData });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error ?? `Tagging failed (${res.status})`);
         }
+        const data = await res.json();
+        data.seasons = Array.isArray(data.seasons) ? data.seasons : [];
+        data.styleTags = Array.isArray(data.styleTags) ? data.styleTags : [];
+        data.formality = Number(data.formality) || 3;
+
+        if (autoModeRef.current) {
+          const saveForm = new FormData();
+          saveForm.append("image", item.file);
+          saveForm.append("tags", JSON.stringify(data));
+          const saveRes = await fetch("/api/items", {
+            method: "POST",
+            body: saveForm,
+          });
+          if (!saveRes.ok) throw new Error("Save failed");
+          updateItem(id, { status: "saved", tags: data, originalTags: data });
+        } else {
+          updateItem(id, { status: "ready", tags: data, originalTags: data });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Failed";
+        updateItem(id, { status: "error", error: msg });
       }
+    },
+    [updateItem]
+  );
+
+  // Worker loop: drains pending items one at a time. Re-entrant-safe via workerRunningRef.
+  const startWorker = useCallback(async () => {
+    if (workerRunningRef.current) return;
+    workerRunningRef.current = true;
+    try {
+      // Loop until no pending items remain
+      // (auto-mode also drains; manual mode pre-tags everything)
+      while (true) {
+        const pending = queueRef.current.find((i) => i.status === "pending");
+        if (!pending) break;
+        await processOne(pending.id);
+        // Small gap between calls to avoid hammering Claude
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } finally {
+      workerRunningRef.current = false;
     }
-  }, [updateItem]);
+  }, [processOne]);
 
-  // Keep ref in sync so the chain closure always calls the latest analyzeItem
-  analyzeItemRef.current = analyzeItem;
+  const addFiles = useCallback(
+    (files: File[]) => {
+      const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+      if (imageFiles.length === 0) return;
 
-  const addFiles = useCallback((files: File[]) => {
-    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+      const wasEmpty = queueRef.current.length === 0;
 
-    const isFirstBatch = queueRef.current.length === 0;
+      const newItems: QueueItem[] = imageFiles.map((file) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        file,
+        imageUrl: URL.createObjectURL(file),
+        status: "pending" as const,
+      }));
 
-    const newItems: QueueItem[] = imageFiles.map((file) => ({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
-      imageUrl: URL.createObjectURL(file),
-      status: "pending" as const,
-    }));
+      setQueueAndRef((prev) => [...prev, ...newItems]);
 
-    setQueue((prev) => {
-      const next = [...prev, ...newItems];
-      queueRef.current = next;
-      return next;
-    });
-
-    if (isFirstBatch) {
-      setCurrentIdx(0);
-      currentIdxRef.current = 0;
-      // Start the chain after state flushes
-      setTimeout(() => {
-        const first = queueRef.current.find((i) => i.status === "pending");
-        if (first) analyzeItemRef.current(first.id);
-      }, 0);
-    }
-    // Non-first-batch: the running chain will naturally pick up new pending items
-  }, []);
+      if (wasEmpty) {
+        setCurrentIdx(0);
+      }
+      // Always (re)start the worker — no-op if already running
+      startWorker();
+    },
+    [setQueueAndRef, startWorker]
+  );
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -156,7 +163,7 @@ export default function IntakePage() {
   };
 
   const handleSave = async (finalTags: Tags, imageFile: File) => {
-    const item = queueRef.current[currentIdxRef.current];
+    const item = queueRef.current[currentIdx];
     if (!item) return;
 
     setSaving(true);
@@ -170,56 +177,49 @@ export default function IntakePage() {
     const res = await fetch("/api/items", { method: "POST", body: formData });
     if (res.ok) {
       updateItem(item.id, { status: "saved" });
-      advance();
+      setCurrentIdx((prev) => prev + 1);
     }
     setSaving(false);
   };
 
   const handleSkip = () => {
-    const item = queueRef.current[currentIdxRef.current];
+    const item = queueRef.current[currentIdx];
     if (item) updateItem(item.id, { status: "skipped" });
-    advance();
-  };
-
-  const advance = () => {
-    setCurrentIdx((prev) => {
-      const next = prev + 1;
-      currentIdxRef.current = next;
-      // Safety: if next item somehow got skipped by the chain, kick it
-      const nextItem = queueRef.current[next];
-      if (nextItem?.status === "pending" && !analyzingIds.current.has(nextItem.id)) {
-        setTimeout(() => analyzeItemRef.current(nextItem.id), 0);
-      }
-      return next;
-    });
+    setCurrentIdx((prev) => prev + 1);
   };
 
   const handleReanalyze = () => {
-    const item = queueRef.current[currentIdxRef.current];
+    const item = queueRef.current[currentIdx];
     if (!item) return;
-    analyzingIds.current.delete(item.id);
-    updateItem(item.id, { status: "pending" });
-    setTimeout(() => analyzeItemRef.current(item.id), 0);
+    updateItem(item.id, { status: "pending", error: undefined });
+    startWorker();
   };
 
   const reset = () => {
-    setQueue([]);
-    queueRef.current = [];
+    setQueueAndRef(() => []);
     setCurrentIdx(0);
-    currentIdxRef.current = 0;
-    analyzingIds.current.clear();
     autoModeRef.current = false;
     setAutoMode(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   };
 
+  // In auto mode, advance currentIdx as items complete so progress UI tracks
+  useEffect(() => {
+    if (!autoMode) return;
+    const finished = queue.filter(
+      (i) =>
+        i.status === "saved" || i.status === "skipped" || i.status === "error"
+    ).length;
+    if (finished !== currentIdx) setCurrentIdx(finished);
+  }, [queue, autoMode, currentIdx]);
+
   const savedCount = queue.filter((i) => i.status === "saved").length;
   const skippedCount = queue.filter((i) => i.status === "skipped").length;
   const errorCount = queue.filter((i) => i.status === "error").length;
   const doneCount = savedCount + skippedCount + errorCount;
   const analyzingCount = queue.filter((i) => i.status === "analyzing").length;
-  const allDone = queue.length > 0 && currentIdx >= queue.length;
+  const allDone = queue.length > 0 && doneCount >= queue.length;
   const currentItem = queue[currentIdx];
 
   // ── Empty state ───────────────────────────────────────────────────────────
@@ -233,7 +233,6 @@ export default function IntakePage() {
           </p>
         </div>
 
-        {/* Mode toggle */}
         <div className="flex items-center justify-between p-4 rounded-xl bg-stone-50 dark:bg-stone-800/50 mb-4">
           <div>
             <p className="text-sm font-medium text-stone-700 dark:text-stone-300">
@@ -301,6 +300,16 @@ export default function IntakePage() {
           {skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
           {errorCount > 0 ? ` · ${errorCount} failed` : ""}
         </p>
+        {errorCount > 0 && (
+          <div className="mt-4 max-w-md mx-auto text-left">
+            <p className="text-xs font-medium text-stone-500 mb-2">Errors:</p>
+            <ul className="text-xs text-stone-400 space-y-1">
+              {queue.filter(i => i.status === "error").slice(0, 5).map(i => (
+                <li key={i.id} className="truncate">• {i.error}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className="flex gap-3 justify-center mt-8">
           <button onClick={reset}
             className="px-6 py-3 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-sm font-medium hover:bg-stone-800 transition-colors">
@@ -327,6 +336,7 @@ export default function IntakePage() {
             <p className="text-sm text-stone-400 mt-0.5">
               {savedCount} of {queue.length} saved
               {analyzingCount > 0 ? " · analyzing…" : ""}
+              {errorCount > 0 ? ` · ${errorCount} failed` : ""}
             </p>
           </div>
           <button
@@ -359,7 +369,7 @@ export default function IntakePage() {
                 </div>
               )}
               {item.status === "error" && (
-                <div className="absolute inset-0 bg-red-900/50 flex items-center justify-center">
+                <div className="absolute inset-0 bg-red-900/50 flex items-center justify-center" title={item.error}>
                   <span className="text-white text-sm">✕</span>
                 </div>
               )}
@@ -368,9 +378,14 @@ export default function IntakePage() {
         </div>
 
         {errorCount > 0 && (
-          <p className="text-xs text-stone-400 mt-4 text-center">
-            {errorCount} failed — pause to retry manually
-          </p>
+          <div className="mt-4 text-xs text-stone-400 text-center">
+            <p>{errorCount} failed:</p>
+            <ul className="mt-1 space-y-0.5 inline-block text-left">
+              {queue.filter(i => i.status === "error").slice(0, 3).map(i => (
+                <li key={i.id} className="text-red-400">• {i.error}</li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     );
@@ -409,10 +424,7 @@ export default function IntakePage() {
           <button
             key={item.id}
             onClick={() => {
-              if (i < currentIdx) {
-                setCurrentIdx(i);
-                currentIdxRef.current = i;
-              }
+              if (i < currentIdx) setCurrentIdx(i);
             }}
             className={`relative flex-shrink-0 w-12 h-16 rounded-lg overflow-hidden border-2 transition-all ${
               i === currentIdx
@@ -436,6 +448,11 @@ export default function IntakePage() {
             {item.status === "analyzing" && i !== currentIdx && (
               <div className="absolute bottom-1 right-1 w-2 h-2 border border-white border-t-transparent rounded-full animate-spin" />
             )}
+            {item.status === "error" && (
+              <div className="absolute inset-0 bg-red-900/40 flex items-center justify-center">
+                <span className="text-white text-xs">!</span>
+              </div>
+            )}
           </button>
         ))}
       </div>
@@ -453,7 +470,7 @@ export default function IntakePage() {
       ) : currentItem?.status === "error" ? (
         <div className="text-center py-12">
           <p className="text-stone-500 mb-1">Could not analyze this photo</p>
-          <p className="text-sm text-red-400 mb-6">{currentItem.error}</p>
+          <p className="text-sm text-red-400 mb-6 max-w-md mx-auto break-words">{currentItem.error}</p>
           <div className="flex gap-3 justify-center">
             <button onClick={handleReanalyze}
               className="px-5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 text-sm text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800 transition-colors">

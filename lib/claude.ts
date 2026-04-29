@@ -39,6 +39,34 @@ const BASE_PROMPT = `Analyze this clothing item and return ONLY a JSON object wi
   "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
 }`;
 
+function extractJson(text: string): unknown {
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    throw new Error(`Could not parse JSON from response: ${cleaned.slice(0, 200)}`);
+  }
+}
+
+async function callWithRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number })?.status;
+      if (status === 401 || status === 400) throw err;
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function tagClothingItem(
   base64Image: string,
   mediaType: string,
@@ -47,29 +75,31 @@ export async function tagClothingItem(
   const fewShot = buildFewShotBlock(corrections);
   const prompt = fewShot ? `${fewShot}\n${BASE_PROMPT}` : BASE_PROMPT;
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-              data: base64Image,
+  const response = await callWithRetry(() =>
+    client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+                data: base64Image,
+              },
             },
-          },
-          { type: "text", text: prompt },
-        ],
-      },
-    ],
-  });
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    })
+  );
 
   const text = response.content.find((b) => b.type === "text")?.text ?? "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+  return extractJson(text);
 }
 
 export async function nameOutfit(
