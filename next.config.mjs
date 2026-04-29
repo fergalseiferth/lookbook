@@ -14,6 +14,9 @@ const nextConfig = {
       { pathname: "/wardrobe/**" },
       { pathname: "/style-seed/**" },
     ],
+    remotePatterns: [
+      { protocol: "https", hostname: "*.public.blob.vercel-storage.com" },
+    ],
   },
   env: {
     NEXT_PUBLIC_BUILD_ID: buildId,

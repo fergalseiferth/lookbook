@@ -3,8 +3,10 @@ import { PrismaLibSql } from "@prisma/adapter-libsql";
 import path from "path";
 
 function createPrismaClient() {
-  const dbUrl = `file://${path.join(process.cwd(), "prisma/lookbook.db")}`;
-  const adapter = new PrismaLibSql({ url: dbUrl });
+  const url = process.env.TURSO_DATABASE_URL
+    ?? `file://${path.join(process.cwd(), "prisma/lookbook.db")}`;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  const adapter = new PrismaLibSql({ url, authToken });
   return new PrismaClient({ adapter });
 }
 
