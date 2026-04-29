@@ -36,6 +36,7 @@ export default function IntakePage() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [autoMode, setAutoMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -175,19 +176,32 @@ export default function IntakePage() {
     if (!item) return;
 
     setSaving(true);
-    const formData = new FormData();
-    formData.append("image", imageFile);
-    formData.append("tags", JSON.stringify(finalTags));
-    if (item.originalTags) {
-      formData.append("originalTags", JSON.stringify(item.originalTags));
-    }
+    setSaveError(null);
 
-    const res = await fetch("/api/items", { method: "POST", body: formData });
-    if (res.ok) {
+    try {
+      const formData = new FormData();
+      formData.append("image", imageFile);
+      formData.append("tags", JSON.stringify(finalTags));
+      if (item.originalTags) {
+        formData.append("originalTags", JSON.stringify(item.originalTags));
+      }
+
+      const res = await fetch("/api/items", { method: "POST", body: formData });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error ?? `Save failed (${res.status})`);
+      }
+
       updateItem(item.id, { status: "saved" });
       setCurrentIdx((prev) => prev + 1);
+      // Make sure worker is alive — if user saved fast, more items may need analyzing
+      startWorker();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleSkip = () => {
@@ -464,6 +478,13 @@ export default function IntakePage() {
           </button>
         ))}
       </div>
+
+      {saveError && (
+        <div className="mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-sm text-red-700 dark:text-red-300">
+          <p className="font-medium">Save failed</p>
+          <p className="text-xs mt-0.5 break-words">{saveError}</p>
+        </div>
+      )}
 
       {currentItem?.status === "analyzing" || currentItem?.status === "pending" ? (
         <div className="flex flex-col items-center justify-center py-20 gap-5">

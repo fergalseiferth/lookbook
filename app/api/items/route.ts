@@ -4,7 +4,7 @@ import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import { put } from "@vercel/blob";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 // Fields we diff to detect user corrections
 const DIFFABLE_FIELDS = [
