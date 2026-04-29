@@ -4,8 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const links = [
+  { href: "/today", label: "Today" },
   { href: "/closet", label: "Closet" },
   { href: "/outfits", label: "Outfits" },
+  { href: "/try", label: "Try" },
   { href: "/gaps", label: "Gaps" },
   { href: "/style", label: "Style" },
 ];
@@ -16,7 +18,7 @@ export default function Nav() {
   return (
     <header className="sticky top-0 z-50 bg-white/90 dark:bg-stone-950/90 backdrop-blur-sm border-b border-stone-100 dark:border-stone-800">
       <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between">
-        <Link href="/closet" className="font-medium text-stone-900 dark:text-stone-100 tracking-tight">
+        <Link href="/today" className="font-medium text-stone-900 dark:text-stone-100 tracking-tight">
           lookbook
         </Link>
         <nav className="flex items-center gap-1">

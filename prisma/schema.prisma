@@ -69,3 +69,10 @@ model TagCorrection {
   original    String
   corrected   String
 }
+
+model WearLog {
+  id       String   @id @default(cuid())
+  wornAt   DateTime @default(now())
+  itemIds  String   // JSON array of ClothingItem IDs
+  outfitId String?  // optional reference to a named Outfit
+}

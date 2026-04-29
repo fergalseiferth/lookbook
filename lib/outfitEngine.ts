@@ -74,23 +74,35 @@ export function generateOutfits(
   items: ClothingItem[],
   theme: string,
   limit = 20,
-  preferredAesthetics: string[] = []
+  preferredAesthetics: string[] = [],
+  anchorItemId?: string,
+  recentlyWornItemIds: Set<string> = new Set()
 ): GeneratedOutfit[] {
   const config = THEMES[theme];
   if (!config) return [];
 
   const active = items.filter((i) => i.active);
+  const anchorItem = anchorItemId ? active.find((i) => i.id === anchorItemId) : null;
 
   const themeItems = active.filter(
     (i) =>
       i.formality >= config.formalityMin && i.formality <= config.formalityMax
   );
 
-  const tops = themeItems.filter((i) => i.category === "tops");
-  const bottoms = themeItems.filter((i) => i.category === "bottoms");
-  const shoes = themeItems.filter((i) => i.category === "shoes");
-  const outerwear = themeItems.filter((i) => i.category === "outerwear");
-  const accessories = themeItems.filter((i) => i.category === "accessories");
+  // If anchor doesn't fit theme formality at all, skip (allow ±1 leeway)
+  if (anchorItem && (anchorItem.formality < config.formalityMin - 1 || anchorItem.formality > config.formalityMax + 1)) {
+    return [];
+  }
+
+  // Lock anchor into its category slot; use all items for other slots
+  const getSlot = (cat: string) =>
+    anchorItem?.category === cat ? [anchorItem] : themeItems.filter((i) => i.category === cat);
+
+  const tops = getSlot("tops");
+  const bottoms = getSlot("bottoms");
+  const shoes = getSlot("shoes");
+  const outerwear = getSlot("outerwear");
+  const accessories = getSlot("accessories");
 
   if (tops.length === 0 || bottoms.length === 0 || shoes.length === 0) {
     return [];
@@ -120,7 +132,8 @@ export function generateOutfits(
           if (cs < 0.6) return;
           const fs = formalityTightness(outfit);
           const ts = styleTagAlignment(outfit, preferredAesthetics);
-          const totalScore = cs * 0.5 + fs * 0.3 + ts * 0.2;
+          const recentPenalty = outfit.filter((i) => recentlyWornItemIds.has(i.id)).length * 0.12;
+          const totalScore = Math.max(0, cs * 0.5 + fs * 0.3 + ts * 0.2 - recentPenalty);
           candidates.push({ items: outfit, theme, colorScore: cs, formalityScore: fs, totalScore });
         };
 
