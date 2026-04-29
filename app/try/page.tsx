@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import Image from "next/image";
+import { resizeImage } from "@/lib/imageResize";
 
 type SimResult = {
   theme: string;
@@ -55,8 +56,9 @@ export default function TryPage() {
     setAutoTagging(true);
     setResult(null);
 
+    const compressed = await resizeImage(file);
     const fd = new FormData();
-    fd.append("image", file);
+    fd.append("image", compressed);
     const res = await fetch("/api/tag", { method: "POST", body: fd });
     if (res.ok) {
       const data = await res.json();

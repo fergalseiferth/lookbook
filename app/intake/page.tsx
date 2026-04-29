@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import Image from "next/image";
 import TagReview from "@/components/TagReview";
 import Link from "next/link";
+import { resizeImage } from "@/lib/imageResize";
 
 type Tags = {
   name?: string;
@@ -80,8 +81,11 @@ export default function IntakePage() {
       updateItem(id, { status: "analyzing" });
 
       try {
+        // Resize before upload to stay under Vercel's 4.5MB body limit
+        const compressed = await resizeImage(item.file);
+
         const formData = new FormData();
-        formData.append("image", item.file);
+        formData.append("image", compressed);
         const res = await fetch("/api/tag", { method: "POST", body: formData });
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({}));
@@ -94,16 +98,20 @@ export default function IntakePage() {
 
         if (autoModeRef.current) {
           const saveForm = new FormData();
-          saveForm.append("image", item.file);
+          saveForm.append("image", compressed);
           saveForm.append("tags", JSON.stringify(data));
           const saveRes = await fetch("/api/items", {
             method: "POST",
             body: saveForm,
           });
-          if (!saveRes.ok) throw new Error("Save failed");
-          updateItem(id, { status: "saved", tags: data, originalTags: data });
+          if (!saveRes.ok) {
+            const saveErr = await saveRes.json().catch(() => ({}));
+            throw new Error(saveErr.error ?? `Save failed (${saveRes.status})`);
+          }
+          // Replace original file with compressed so manual save (if user pauses) is also small
+          updateItem(id, { status: "saved", tags: data, originalTags: data, file: compressed });
         } else {
-          updateItem(id, { status: "ready", tags: data, originalTags: data });
+          updateItem(id, { status: "ready", tags: data, originalTags: data, file: compressed });
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed";
