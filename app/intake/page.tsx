@@ -513,6 +513,7 @@ export default function IntakePage() {
         </div>
       ) : currentItem?.status === "ready" && currentItem.tags ? (
         <TagReview
+          key={currentItem.id}
           imageFile={currentItem.file}
           imageUrl={currentItem.imageUrl}
           initialTags={currentItem.tags}
