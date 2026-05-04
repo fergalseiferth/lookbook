@@ -25,6 +25,9 @@ model ClothingItem {
   styleTags       String
   notes           String?
   active          Boolean  @default(true)
+  role            String?
+  silhouetteWidth String?
+  stylingNote     String?
 }
 
 model Outfit {

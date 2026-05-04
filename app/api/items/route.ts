@@ -129,6 +129,9 @@ export async function POST(req: NextRequest) {
         seasons: JSON.stringify(tags.seasons ?? []),
         styleTags: JSON.stringify(tags.styleTags ?? []),
         notes: (tags.notes as string) ?? null,
+        role: (tags.role as string) ?? null,
+        silhouetteWidth: (tags.silhouetteWidth as string) ?? null,
+        stylingNote: (tags.stylingNote as string) ?? null,
       },
     });
   } catch (err) {

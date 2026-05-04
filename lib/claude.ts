@@ -36,7 +36,10 @@ const BASE_PROMPT = `Analyze this clothing item and return ONLY a JSON object wi
   "fit": "one of: slim | regular | relaxed | oversized — assess from the garment shape",
   "formality": "integer 1-5. Guide: 1=gym/lounge wear, 2=quality leather sneakers (e.g. Nike Blazers) or very casual tops, 3=chinos/smart trousers/overshirts/henleys, 4=blazers/dress shirts/chelsea boots, 5=suits/formal shoes",
   "seasons": ["array of applicable seasons: spring | summer | fall | winter"],
-  "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"]
+  "styleTags": ["2-4 style descriptors from: minimal | classic | preppy | workwear | streetwear | earthy | coastal | smart-casual | vintage | athletic | bohemian | utility"],
+  "role": "one of: foundation | layer | statement | standalone. foundation=plain tees/tanks/basics worn as a base; layer=cardigans/overshirts/jackets worn open over something; statement=bold pattern or color piece that anchors the look; standalone=complete piece that needs no layering",
+  "silhouetteWidth": "one of: fitted | straight | relaxed | wide — how the garment sits on the body regardless of formality. fitted=close to body, straight=clean column, relaxed=slightly roomy, wide=deliberately oversized volume",
+  "stylingNote": "one sentence of practical styling advice for this specific piece e.g. 'Wear open over a white tee with straight-leg trousers and loafers' or 'Best as a base layer — tuck into high-waisted trousers for a clean line'"
 }`;
 
 function extractJson(text: string): unknown {

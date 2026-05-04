@@ -84,8 +84,39 @@ export function ensureSchema(): Promise<void> {
     });
 
     try {
+      // Create tables
       for (const stmt of SCHEMA_STATEMENTS) {
         await client.execute(stmt);
+      }
+
+      // Add new columns to existing tables (ALTER TABLE fails silently if column exists)
+      const migrations = [
+        `ALTER TABLE "ClothingItem" ADD COLUMN "role" TEXT`,
+        `ALTER TABLE "ClothingItem" ADD COLUMN "silhouetteWidth" TEXT`,
+        `ALTER TABLE "ClothingItem" ADD COLUMN "stylingNote" TEXT`,
+      ];
+      for (const stmt of migrations) {
+        try { await client.execute(stmt); } catch { /* column already exists — fine */ }
+      }
+
+      // Seed default style profile if none exists
+      const existing = await client.execute(`SELECT COUNT(*) as count FROM "StyleProfile"`);
+      const count = Number((existing.rows[0] as Record<string, unknown>)?.count ?? 0);
+      if (count === 0) {
+        await client.execute({
+          sql: `INSERT INTO "StyleProfile" (
+            "id","updatedAt","aesthetics","likedLooks","colorPalette","avoidColors","formalityRange","notes"
+          ) VALUES (?,CURRENT_TIMESTAMP,?,?,?,?,?,?)`,
+          args: [
+            "default",
+            JSON.stringify(["smart-casual","minimal","classic","coastal"]),
+            JSON.stringify([]),
+            JSON.stringify(["navy","white","cream","olive","camel","light denim","earth tones"]),
+            JSON.stringify(["neon","bright red","purple","loud graphics"]),
+            JSON.stringify({ min: 2, max: 4 }),
+            "Relaxed European smart-casual. Straight or relaxed trousers — not extreme wide-leg. Core combos: navy+white, navy+cream, olive+black, camel+white. Layering formula: white base layer under cardigan or open overshirt. Clean footwear: loafers, chelsea boots, low sneakers. Intentional accessories without overdoing it.",
+          ],
+        });
       }
     } finally {
       client.close();

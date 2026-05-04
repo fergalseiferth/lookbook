@@ -11,6 +11,10 @@ export type ClothingItem = {
   name: string | null;
   imagePath: string;
   active: boolean;
+  fit?: string | null;
+  role?: string | null;
+  silhouetteWidth?: string | null;
+  stylingNote?: string | null;
 };
 
 const NEUTRALS = [
