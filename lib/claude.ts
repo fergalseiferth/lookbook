@@ -106,6 +106,36 @@ export async function tagClothingItem(
   return extractJson(text);
 }
 
+const ENRICH_PROMPT = `Look at this clothing item and return ONLY a JSON object — no preamble, no markdown.
+
+{
+  "role": "one of: foundation | layer | statement | standalone. foundation=plain tee/tank worn as base layer; layer=cardigan/overshirt/jacket worn open; statement=bold pattern or colour that anchors a look; standalone=complete piece needing no layering",
+  "silhouetteWidth": "one of: fitted | straight | relaxed | wide — how the garment sits on the body",
+  "stylingNote": "one practical sentence on how to wear this piece e.g. 'Wear open over a white tee with straight trousers and loafers'"
+}`;
+
+export async function enrichClothingItem(base64Image: string, mediaType: string): Promise<{
+  role: string;
+  silhouetteWidth: string;
+  stylingNote: string;
+}> {
+  const response = await callWithRetry(() =>
+    client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 256,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64Image } },
+          { type: "text", text: ENRICH_PROMPT },
+        ],
+      }],
+    })
+  );
+  const text = response.content.find((b) => b.type === "text")?.text ?? "";
+  return extractJson(text) as { role: string; silhouetteWidth: string; stylingNote: string };
+}
+
 export async function nameOutfit(
   items: Array<{
     name: string | null;

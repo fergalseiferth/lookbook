@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+  const { id } = params;
   const item = await prisma.clothingItem.findUnique({ where: { id } });
   if (!item) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(item);
 }
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+  const { id } = params;
   const body = await req.json();
 
   // Serialize arrays if passed
@@ -20,8 +20,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   return NextResponse.json(item);
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+  const { id } = params;
   await prisma.clothingItem.update({ where: { id }, data: { active: false } });
   return NextResponse.json({ ok: true });
 }

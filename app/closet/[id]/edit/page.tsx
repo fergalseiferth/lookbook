@@ -30,22 +30,21 @@ type Item = {
   imagePath: string;
 };
 
-export default function EditItemPage({ params }: { params: Promise<{ id: string }> }) {
+export default function EditItemPage({ params }: { params: { id: string } }) {
+  const { id } = params;
   const router = useRouter();
   const [item, setItem] = useState<Item | null>(null);
   const [form, setForm] = useState<Partial<Item>>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    params.then(({ id }) => {
-      fetch(`/api/items/${id}`)
-        .then((r) => r.json())
-        .then((data) => {
-          setItem(data);
-          setForm(data);
-        });
-    });
-  }, [params]);
+    fetch(`/api/items/${id}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setItem(data);
+        setForm(data);
+      });
+  }, [id]);
 
   if (!item) {
     return (
